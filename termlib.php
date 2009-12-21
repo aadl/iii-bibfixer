@@ -150,6 +150,91 @@ class TermLib {
   }
 
   /**
+  * Retrieve MARC field information for a item record
+  */
+  public function get_item_info($inum) {
+    $item_record = array();
+    $inum = ".i" . substr(preg_replace('/[^0-9]/', '', $inum), 0, 7) . "a";
+    if ($this->verbose) echo "Grabbing Item Info for $inum\n";
+    
+    if ($this->login()) {
+      if ($this->verbose) echo "SSH LOGIN ERROR\n";
+      return "SSH LOGIN ERROR";
+    }
+    
+    $trans_arr = array(
+      array('input' => '', 'expect' => 'MAIN MENU'),
+      array('input' => 'd', 'expect' => 'CATALOG DATABASE'),
+      array('input' => 'u', 'expect' => 'key your initials'),
+      array('input' => $this->init . PHP_EOL, 'expect' => 'key your password'),
+      array('input' => $this->init_pass . PHP_EOL, 'expect' => 'ITEM'),
+      array('input' => 'i', 'expect' => 'want to update'),
+      array('input' => $inum . PHP_EOL, 'expect' => 'Key its number'),
+    );
+    
+    foreach ($trans_arr as $cmd) {
+      $trans = $this->transmit($cmd['input'], $cmd['expect']);
+      if ($this->verbose) echo $cmd['input'] . ":" . $cmd['expect'] . "\n";
+      if ($trans['error']) {
+        $status = "ERROR";
+        $info = $cmd['input'] . " EXPECTING " . $cmd['expect'];
+      }
+    }
+
+    if ($status != "ERROR") {
+      // determine max code of editable fields
+      preg_match("/Choose one \(1-([0-9]{1,3})/", $trans['unfiltered'], $max_code_match);
+      $max_code = $max_code_match[1];
+      while(!$last_code_found) {
+        $lines = preg_split("[\n|\r]", $trans['result']);
+        foreach($lines as $line) {
+          if (preg_match('/^([0-9]{2}) (.{16})([0-9]{2}) (.{16})/', $line)) {
+            // Mutiple entries on the same line
+            preg_match_all('/([0-9]{2}) (.{16})/', $line, $multicodes);
+            foreach ($multicodes[1] as $index => $code) {
+              $split = strpos($multicodes[2][$index], ':');
+              $field = substr($multicodes[2][$index], 0, $split);
+              $value = trim(substr($multicodes[2][$index], $split+1));
+              $item_record[$code] = array('field' => $field, 'value' => $value);
+              if ($code == $max_code) {
+                $last_code_found = TRUE;
+              }
+            }
+          } else if (preg_match('/([0-9]{2}) ([0-9 ]{3,7}) (.*)/', $line, $marcdata)) {
+            // marc number fields
+            $code = $marcdata[1];
+            $marc = trim($marcdata[2]);
+            $value = trim($marcdata[3]);
+            $item_record[$code] = array('field' => $marc, 'value' => $value);
+            if ($code == $max_code) {
+              $last_code_found = TRUE;
+            }
+          } else if (preg_match('/([0-9]{2}) ([A-Z ]{3,12}) (.*)/', $line, $fielddata)) {
+            // other fields on a single line
+            $code = $fielddata[1];
+            $field = trim($fielddata[2]);
+            $value = trim($fielddata[3]);
+            $item_record[$code] = array('field' => $field, 'value' => $value);
+            if ($code == $max_code) {
+              $last_code_found = TRUE;
+            }
+          } else if (preg_match('/[ ]{11}(.*)/', $line, $extra)) {
+            // extra data that goes with the previous line
+            $extra = trim($extra[1]);
+            if ($code) {
+              $item_record[$code]['value'] .= $extra;
+            }
+          }
+        }
+        $trans = $this->transmit('m');
+      }
+    }
+    $this->disconnect();
+    ksort($item_record);
+    return $item_record;
+  }
+
+  /**
    * Update a bib record with the given text
    * You MUST enter the field code number as returned by get_bib_info()
    */
